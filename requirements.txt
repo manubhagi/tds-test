@@ -11,3 +11,4 @@ langchain-google-genai
 google-generativeai
 python-multipart
 networkx
+seaborn
