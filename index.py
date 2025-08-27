@@ -265,174 +265,95 @@ def scrape_url_to_dataframe(url: str) -> Dict[str, Any]:
 '''
 
 
-def write_and_run_temp_python(code: str, injected_pickle: str = None, timeout: int = 60) -> Dict[str, Any]:
+import subprocess, sys, tempfile, os, pickle, base64, json
+import pandas as pd
+
+def write_and_run_temp_python(user_code: str, df: pd.DataFrame):
     """
-    Write a temp python file which:
-      - provides a safe environment (imports)
-      - loads df/from pickle if provided into df and data variables
-      - defines a robust plot_to_base64() helper that ensures < 100kB (attempts resizing/conversion)
-      - executes the user code (which should populate `results` dict)
-      - prints json.dumps({"status":"success","result":results})
-    Returns dict with parsed JSON or error details.
+    Writes a temp python script that:
+      - injects df via pickle
+      - defines plot_to_base64 helper
+      - runs user_code
+      - ensures JSON-safe stdout parsing
     """
-    # create file content
-    preamble = [
-        "import json, sys, gc",
-        "import pandas as pd, numpy as np",
-        "import matplotlib",
-        "matplotlib.use('Agg')",
-        "import matplotlib.pyplot as plt",
-        "from io import BytesIO",
-        "import base64",
-    ]
-    if PIL_AVAILABLE:
-        preamble.append("from PIL import Image")
-    # inject df if a pickle path provided
-    if injected_pickle:
-        preamble.append(f"df = pd.read_pickle(r'''{injected_pickle}''')\n")
-        preamble.append("data = df.to_dict(orient='records')\n")
-    else:
-        # ensure data exists so user code that references data won't break
-        preamble.append("data = globals().get('data', {})\n")
+    preamble = """import pandas as pd, numpy as np, matplotlib.pyplot as plt
+import seaborn as sns
+import pickle, base64, io, json
+from PIL import Image
 
-    # plot_to_base64 helper that tries to reduce size under 100_000 bytes
-    helper = r'''
-def plot_to_base64(max_bytes=100000):
+# Load dataframe from pickle
+with open("df.pkl","rb") as f:
+    df = pickle.load(f)
+
+# Helper to encode plots to base64
+def plot_to_base64(fig=None):
+    import matplotlib.pyplot as plt
+    from io import BytesIO
+    import base64
+    from PIL import Image
+
+    if fig is None:
+        fig = plt.gcf()
     buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
     buf.seek(0)
-    img_bytes = buf.getvalue()
-    if len(img_bytes) <= max_bytes:
-        return base64.b64encode(img_bytes).decode('ascii')
-    # try decreasing dpi/figure size iteratively
-    for dpi in [80, 60, 50, 40, 30]:
-        buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=dpi)
-        buf.seek(0)
-        b = buf.getvalue()
-        if len(b) <= max_bytes:
-            return base64.b64encode(b).decode('ascii')
-    # if Pillow available, try convert to WEBP which is typically smaller
-    try:
-        from PIL import Image
-        buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight', dpi=40)
-        buf.seek(0)
-        im = Image.open(buf)
-        out_buf = BytesIO()
-        im.save(out_buf, format='WEBP', quality=80, method=6)
-        out_buf.seek(0)
-        ob = out_buf.getvalue()
-        if len(ob) <= max_bytes:
-            return base64.b64encode(ob).decode('ascii')
-        # try lower quality
-        out_buf = BytesIO()
-        im.save(out_buf, format='WEBP', quality=60, method=6)
-        out_buf.seek(0)
-        ob = out_buf.getvalue()
-        if len(ob) <= max_bytes:
-            return base64.b64encode(ob).decode('ascii')
-    except Exception:
-        pass
-    # as last resort return downsized PNG even if > max_bytes
-    buf = BytesIO()
-    plt.savefig(buf, format='png', bbox_inches='tight', dpi=20)
-    buf.seek(0)
-    return base64.b64encode(buf.getvalue()).decode('ascii')
-'''
 
-    # Build the code to write
-    script_lines = []
-    script_lines.extend(preamble)
-    script_lines.append(helper)
-    script_lines.append(SCRAPE_FUNC)
-    script_lines.append("\nresults = {}\n")
-    script_lines.append(code)
-    # ensure results printed as json
-    script_lines.append("\nprint(json.dumps({'status':'success','result':results}, default=str), flush=True)\n")
+    # resize + reencode to keep size <100KB if possible
+    img = Image.open(buf)
+    buf2 = BytesIO()
+    img.save(buf2, format="PNG", optimize=True)
+    data = buf2.getvalue()
 
-    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False, encoding='utf-8')
-    tmp.write("\n".join(script_lines))
-    tmp.flush()
-    tmp_path = tmp.name
-    tmp.close()
+    # fallback: webp (smaller)
+    if len(data) > 100000:
+        buf2 = BytesIO()
+        img.save(buf2, format="WEBP", quality=80)
+        data = buf2.getvalue()
 
-    try:
-        completed = subprocess.run([sys.executable, tmp_path],
-                                   capture_output=True, text=True, timeout=timeout)
-        if completed.returncode != 0:
-            # collect stderr and stdout for debugging
-            return {"status": "error", "message": completed.stderr.strip() or completed.stdout.strip()}
-        # parse stdout as json
+    return base64.b64encode(data).decode("utf-8")
+"""
+
+    # write temp file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = os.path.join(tmpdir, "script.py")
+        df_path = os.path.join(tmpdir, "df.pkl")
+        with open(df_path, "wb") as f:
+            pickle.dump(df, f)
+
+        with open(script_path, "w") as f:
+            f.write(preamble + "\n" + user_code + "\n")
+
+        # run subprocess
+        completed = subprocess.run(
+            [sys.executable, script_path],
+            cwd=tmpdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        # capture stdout
         out = completed.stdout.strip()
+
+        # ✅ Only keep the last JSON object in stdout
+        last_brace = out.rfind("{")
+        if last_brace != -1:
+            candidate = out[last_brace:]
+        else:
+            candidate = out
+
         try:
-            parsed = json.loads(out)
+            parsed = json.loads(candidate)
             return parsed
         except Exception as e:
-            return {"status": "error", "message": f"Could not parse JSON output: {str(e)}", "raw": out}
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "message": "Execution timed out"}
-    finally:
-        try:
-            os.unlink(tmp_path)
-            if injected_pickle and os.path.exists(injected_pickle):
-                os.unlink(injected_pickle)
-        except Exception:
-            pass
+            return {
+                "status": "error",
+                "message": f"Could not parse JSON output: {str(e)}",
+                "raw": candidate,
+                "stderr": completed.stderr.strip(),
+            }
 
-
-# -----------------------------
-# LLM agent setup
-# -----------------------------
-llm = ChatGoogleGenerativeAI(
-    model=os.getenv("GOOGLE_MODEL", "gemini-2.0-flash"),
-    temperature=0,
-    google_api_key=os.getenv("GOOGLE_API_KEY")
-)
-
-# Tools list for agent (LangChain tool decorator returns metadata for the LLM)
-tools = [scrape_url_to_dataframe]  # we only expose scraping as a tool; agent will still produce code
-
-# Prompt: instruct agent to call the tool and output JSON only
-prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a full-stack autonomous data analyst agent.
-
-You will receive:
-- A set of **rules** for this request (these rules may differ depending on whether a dataset is uploaded or not)
-- One or more **questions**
-- An optional **dataset preview**
-
-You must:
-1. Follow the provided rules exactly.
-2. Return only a valid JSON object — no extra commentary or formatting.
-3. The JSON must contain:
-   - "questions": [ list of original question strings exactly as provided ]
-   - "code": "..." (Python code that creates a dict called `results` with each question string as a key and its computed answer as the value)
-4. Your Python code will run in a sandbox with:
-   - pandas, numpy, matplotlib available
-   - A helper function `plot_to_base64(max_bytes=100000)` for generating base64-encoded images under 100KB.
-5. When returning plots, always use `plot_to_base64()` to keep image sizes small.
-6. Make sure all variables are defined before use, and the code can run without any undefined references.
-"""),
-    ("human", "{input}"),
-    MessagesPlaceholder(variable_name="agent_scratchpad"),
-])
-
-agent = create_tool_calling_agent(
-    llm=llm,
-    tools=[scrape_url_to_dataframe],  # let the agent call tools if it wants; we will also pre-process scrapes
-    prompt=prompt
-)
-
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=[scrape_url_to_dataframe],
-    verbose=True,
-    max_iterations=3,
-    early_stopping_method="generate",
-    handle_parsing_errors=True,
-    return_intermediate_steps=False
-)
 
 
 # -----------------------------
