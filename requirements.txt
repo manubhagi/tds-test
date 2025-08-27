@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+requests
+pandas
+numpy
+matplotlib
+beautifulsoup4
+langchain
+langchain-google-genai
+google-generativeai
+python-multipart
+networkx
