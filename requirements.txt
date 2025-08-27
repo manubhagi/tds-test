@@ -15,3 +15,5 @@ langchain-core
 langchain-google-genai
 networkx
 tabulate
+python-multipart
+
