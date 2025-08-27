@@ -62,21 +62,58 @@ def initialize_agent():
     global llm, agent_executor
     
     try:
+        # Check for Google API key
         google_api_key = os.getenv("GOOGLE_API_KEY")
         if not google_api_key:
             logger.error("GOOGLE_API_KEY not found in environment variables")
             return False
-            
-        logger.info("Initializing LLM with Gemini Pro...")
+        
+        # Use the updated Gemini model name
+        model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")  # Updated to Gemini 2.0 Flash
+        
+        logger.info(f"Initializing Google Generative AI with model: {model_name}")
+        
+        # Initialize Gemini LLM with updated model
         llm = ChatGoogleGenerativeAI(
-            model="gemini-pro",
+            model=model_name,
             google_api_key=google_api_key,
-            temperature=0.1
+            temperature=0.1,
+            convert_system_message_to_human=True  # Handle system messages properly
         )
+        
+        # Test the connection with a simple message
+        try:
+            test_response = llm.invoke([("human", "Hello, respond with just 'OK'")])
+            logger.info("LLM connection test successful")
+        except Exception as e:
+            logger.error(f"LLM connection test failed: {e}")
+            # Try with other Gemini 2.0 models as fallback
+            fallback_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+            
+            for fallback_model in fallback_models:
+                if fallback_model != model_name:  # Don't retry the same model
+                    try:
+                        logger.info(f"Trying fallback model: {fallback_model}")
+                        llm = ChatGoogleGenerativeAI(
+                            model=fallback_model,
+                            google_api_key=google_api_key,
+                            temperature=0.1,
+                            convert_system_message_to_human=True
+                        )
+                        test_response = llm.invoke([("human", "Hello, respond with just 'OK'")])
+                        logger.info(f"Fallback model {fallback_model} connection successful")
+                        model_name = fallback_model  # Update the model name for logging
+                        break
+                    except Exception as e2:
+                        logger.error(f"Fallback model {fallback_model} also failed: {e2}")
+                        continue
+            else:
+                logger.error("All fallback models failed")
+                return False
         
         # Create agent prompt
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a data analysis agent. Your job is to:
+            ("human", """You are a data analysis agent. Your job is to:
             1. Analyze questions and determine what data/analysis is needed
             2. Generate Python code to answer the questions
             3. Return results in the exact format requested
@@ -87,16 +124,29 @@ def initialize_agent():
             
             Available tools: scrape_url_to_dataframe for web data
             Available libraries: pandas, numpy, matplotlib, seaborn, PIL
-            Helper function: plot_to_base64() for encoding plots"""),
-            MessagesPlaceholder(variable_name="chat_history", optional=True),
-            ("human", "{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad")
+            Helper function: plot_to_base64() for encoding plots
+            
+            Example response:
+            {
+              "questions": ["What is the average age?", "Show age distribution plot"],
+              "code": "results['What is the average age?'] = df['age'].mean()\\nfig, ax = plt.subplots()\\ndf['age'].hist(ax=ax)\\nresults['Show age distribution plot'] = plot_to_base64(fig)"
+            }
+            
+            User request: {input}
+            
+            {agent_scratchpad}"""),
         ])
         
         # Create agent
         tools = [scrape_url_to_dataframe]
         agent = create_tool_calling_agent(llm, tools, prompt)
-        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+        agent_executor = AgentExecutor(
+            agent=agent, 
+            tools=tools, 
+            verbose=True,
+            handle_parsing_errors=True,
+            max_iterations=3
+        )
         
         logger.info("Agent initialized successfully")
         return True
@@ -120,7 +170,70 @@ async def serve_frontend():
         with open(index_path, "r", encoding="utf-8") as f:
             return HTMLResponse(content=f.read())
     except FileNotFoundError:
-        return HTMLResponse(content="<h1>Frontend not found</h1><p>Please ensure index.html is in the same directory as app.py</p>", status_code=404)
+        # Return a simple HTML page if index.html is not found
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>TDS Data Analyst Agent</title>
+            <style>
+                body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+                .container { background: #f5f5f5; padding: 20px; border-radius: 8px; }
+                .endpoint { background: white; padding: 15px; margin: 10px 0; border-radius: 5px; }
+                code { background: #eee; padding: 2px 5px; border-radius: 3px; }
+            </style>
+        </head>
+        <body>
+            <h1>TDS Data Analyst Agent</h1>
+            <div class="container">
+                <h2>API Endpoints</h2>
+                
+                <div class="endpoint">
+                    <h3>Health Check</h3>
+                    <p><strong>GET</strong> <code>/api</code></p>
+                    <p>Check server status and configuration</p>
+                </div>
+                
+                <div class="endpoint">
+                    <h3>File Upload Analysis</h3>
+                    <p><strong>POST</strong> <code>/api</code></p>
+                    <p>Upload questions file (.txt) and data file (CSV, Excel, etc.)</p>
+                    <p>Content-Type: <code>multipart/form-data</code></p>
+                </div>
+                
+                <div class="endpoint">
+                    <h3>JSON API Analysis</h3>
+                    <p><strong>POST</strong> <code>/api</code></p>
+                    <p>Send JSON with questions and optional data_url</p>
+                    <p>Content-Type: <code>application/json</code></p>
+                    <p>Example:</p>
+                    <pre><code>{
+  "questions": "What is the average age?",
+  "data_url": "https://example.com/data.csv"
+}</code></pre>
+                </div>
+                
+                <h2>Supported Data Formats</h2>
+                <ul>
+                    <li>CSV (.csv)</li>
+                    <li>Excel (.xlsx, .xls)</li>
+                    <li>Parquet (.parquet)</li>
+                    <li>JSON (.json)</li>
+                    <li>Images (.png, .jpg, .jpeg)</li>
+                </ul>
+                
+                <h2>Environment Variables</h2>
+                <ul>
+                    <li><code>GOOGLE_API_KEY</code> - Required for Gemini API</li>
+                    <li><code>GEMINI_MODEL</code> - Optional, defaults to gemini-2.0-flash-exp</li>
+                </ul>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
 
 
 def parse_keys_and_types(raw_questions: str):
@@ -717,6 +830,7 @@ async def analyze_get_info():
         "message": "Server is running. Use POST /api for analysis.",
         "agent_status": agent_status,
         "google_api_key_present": bool(os.getenv("GOOGLE_API_KEY")),
+        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-2.0-flash-exp"),
         "endpoints": {
             "file_upload": "POST /api - Upload files (multipart/form-data with questions.txt + data file)",
             "json_api": "POST /api - Send JSON with questions and optional data_url",
