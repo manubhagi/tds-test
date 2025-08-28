@@ -1,3 +1,4 @@
+#app.py
 import os
 import networkx as nx
 import re
@@ -381,10 +382,10 @@ def plot_to_base64(max_bytes=100000):
 
 
 # -----------------------------
-# LLM agent setup - UPDATED TO USE GEMINI 2.0 FLASH
+# LLM agent setup
 # -----------------------------
 llm = ChatGoogleGenerativeAI(
-    model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),  # Changed from gemini-2.5-pro to gemini-2.0-flash
+    model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
@@ -501,6 +502,7 @@ from fastapi import Request
 async def analyze_data(request: Request):
     """Main API endpoint for file uploads and analysis"""
     try:
+        # Check content type
         content_type = request.headers.get("content-type", "")
         
         if "multipart/form-data" in content_type:
@@ -734,3 +736,38 @@ import base64, os
 _FAVICON_FALLBACK_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO3n+9QAAAAASUVORK5CYII="
 )
+
+
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """
+    Serve favicon.ico if present in the working directory.
+    Otherwise return a tiny transparent PNG to avoid 404s.
+    """
+    path = "favicon.ico"
+    if os.path.exists(path):
+        return FileResponse(path, media_type="image/x-icon")
+    return Response(content=_FAVICON_FALLBACK_PNG, media_type="image/png")
+
+@app.get("/api", include_in_schema=False)
+async def analyze_get_info():
+    """Health/info endpoint. Use POST /api for actual analysis."""
+    return JSONResponse({
+        "ok": True,
+        "message": "Server is running. Use POST /api for analysis.",
+        "endpoints": {
+            "file_upload": "POST /api - Upload files (multipart/form-data with questions.txt + data file)",
+            "json_api": "POST /api - Send JSON with questions and optional data_url",
+            "health_check": "GET /api - This endpoint"
+        },
+        "usage_examples": {
+            "file_upload": "curl -X POST http://127.0.0.1:8000/api -F 'questions_file=@questions.txt' -F 'data_file=@dataset.csv'",
+            "json_api": "curl -X POST http://127.0.0.1:8000/api -H 'Content-Type: application/json' -d '{\"questions\": \"What is the average age?\", \"data_url\": \"https://example.com/data.csv\"}'"
+        },
+        "supported_formats": {
+            "questions": "Text file (.txt) or JSON string",
+            "data": "CSV, Excel (.xlsx, .xls), Parquet, JSON, Images (.png, .jpg, .jpeg)"
+        }
+    })
