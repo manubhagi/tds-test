@@ -407,12 +407,13 @@ You must:
 2. Return only a valid JSON object — no extra commentary or formatting.
 3. The JSON must contain:
    - "questions": [ list of original question strings exactly as provided ]
-   - "code": "..." (Python code that creates a dict called `results` with each question string as a key and its computed answer as the value)
+   - "code": "..." (Python code that creates a dict called `results` with each question string **verbatim** as a key and its computed answer as the value)
 4. Your Python code will run in a sandbox with:
    - pandas, numpy, matplotlib available
    - A helper function `plot_to_base64(max_bytes=100000)` for generating base64-encoded images under 100KB.
 5. When returning plots, always use `plot_to_base64()` to keep image sizes small.
 6. Make sure all variables are defined before use, and the code can run without any undefined references.
+7. **Important:** The keys of `results` must exactly match the original natural language question strings, without abbreviation, renaming, or formatting changes.
 """),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
