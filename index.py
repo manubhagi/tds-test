@@ -385,7 +385,7 @@ def plot_to_base64(max_bytes=100000):
 # LLM agent setup - UPDATED TO USE GEMINI 2.0 FLASH
 # -----------------------------
 llm = ChatGoogleGenerativeAI(
-    model=os.getenv("GOOGLE_MODEL", "gemini-2.0-flash"),  # Changed from gemini-2.5-pro to gemini-2.0-flash
+    model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),  # Changed from gemini-2.5-pro to gemini-2.0-flash
     temperature=0,
     google_api_key=os.getenv("GOOGLE_API_KEY")
 )
