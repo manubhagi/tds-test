@@ -502,7 +502,6 @@ from fastapi import Request
 async def analyze_data(request: Request):
     """Main API endpoint for file uploads and analysis"""
     try:
-        # Check content type
         content_type = request.headers.get("content-type", "")
         
         if "multipart/form-data" in content_type:
